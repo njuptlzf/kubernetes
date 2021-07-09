@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -428,7 +429,10 @@ func (a *Admission) EvaluatePodsInNamespace(ctx context.Context, namespace strin
 		return []string{"Failed to list pods"}
 	}
 
-	var warnings []string
+	var (
+		warnings    []string
+		podsWarings = make(map[string][]string)
+	)
 	if len(pods) > namespaceMaxPodsToCheck {
 		warnings = append(warnings, fmt.Sprintf("Large namespace: only checking the first %d of %d pods", namespaceMaxPodsToCheck, len(pods)))
 		pods = pods[0:namespaceMaxPodsToCheck]
@@ -441,15 +445,31 @@ func (a *Admission) EvaluatePodsInNamespace(ctx context.Context, namespace strin
 		}
 		r := policy.AggregateCheckResults(a.Evaluator.EvaluatePod(enforce, &pod.ObjectMeta, &pod.Spec))
 		if !r.Allowed {
-			// TODO: consider aggregating results (e.g. multiple pods failed for the same reasons)
-			warnings = append(warnings, fmt.Sprintf("%s: %s", pod.Name, r.ForbiddenReason()))
+			setPodsWarings(podsWarings, r.ForbiddenReasons, pod.Name)
 		}
 		if time.Now().After(deadline) {
+			warnings = aggregateWarnings(podsWarings, warnings)
 			return append(warnings, fmt.Sprintf("Timeout reached after checking %d pods", i+1))
 		}
 	}
 
-	return warnings
+	return aggregateWarnings(podsWarings, warnings)
+}
+
+// aggregating pods with identical warnings
+func setPodsWarings(podsWarings map[string][]string, reasons []string, name string) {
+	for _, reason := range reasons {
+		podsWarings[reason] = append(podsWarings[reason], name)
+	}
+}
+
+// Convert unordered map to []string
+func aggregateWarnings(podsWarings map[string][]string, warning []string) []string {
+	var s []string
+	for reason, podnames := range podsWarings {
+		s = append(s, fmt.Sprintf("%s: %s", reason, strings.Join(podnames, ", ")))
+	}
+	return append(warning, s...)
 }
 
 func (a *Admission) PolicyToEvaluate(labels map[string]string) (api.Policy, error) {

@@ -18,7 +18,6 @@ package admission
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -343,7 +342,7 @@ func TestValidateNamespace(t *testing.T) {
 			expectAllowed:  true,
 			expectListPods: true,
 			expectEvaluate: api.LevelVersion{Level: api.LevelRestricted, Version: api.LatestVersion()},
-			expectWarnings: []string{"noruntimeclasspod: message", "runtimeclass1pod: message", "runtimeclass2pod: message"},
+			expectWarnings: []string{"message: noruntimeclasspod, runtimeclass1pod, runtimeclass2pod", "message2: runtimeclass3pod"},
 		},
 		{
 			name:                 "update with runtimeclass exempt pods",
@@ -353,10 +352,18 @@ func TestValidateNamespace(t *testing.T) {
 			expectAllowed:        true,
 			expectListPods:       true,
 			expectEvaluate:       api.LevelVersion{Level: api.LevelRestricted, Version: api.LatestVersion()},
-			expectWarnings:       []string{"noruntimeclasspod: message", "runtimeclass2pod: message"},
+			expectWarnings:       []string{"message: noruntimeclasspod, runtimeclass2pod"},
+		},
+		{
+			name:           "aggregating pods with identical warnings",
+			newLabels:      map[string]string{api.EnforceLevelLabel: string(api.LevelRestricted)},
+			oldLabels:      map[string]string{api.EnforceLevelLabel: string(api.LevelBaseline)},
+			expectAllowed:  true,
+			expectListPods: true,
+			expectEvaluate: api.LevelVersion{Level: api.LevelRestricted, Version: api.LatestVersion()},
+			expectWarnings: []string{"message: noruntimeclasspod, runtimeclass1pod, runtimeclass2pod", "message2: runtimeclass3pod"},
 		},
 
-		// TODO: test for aggregating pods with identical warnings
 		// TODO: test for bounding evalution time with a warning
 		// TODO: test for bounding pod count with a warning
 		// TODO: test for prioritizing evaluating pods from unique controllers
@@ -415,6 +422,10 @@ func TestValidateNamespace(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{Name: "runtimeclass2pod", Annotations: map[string]string{"error": "message"}},
 						Spec:       corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass2")},
 					},
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "runtimeclass3pod", Annotations: map[string]string{"error": "message2"}},
+						Spec:       corev1.PodSpec{RuntimeClassName: pointer.String("runtimeclass1")},
+					},
 				}
 			}
 			podLister := &testPodLister{pods: pods}
@@ -451,9 +462,22 @@ func TestValidateNamespace(t *testing.T) {
 			if evaluator.lv != tc.expectEvaluate {
 				t.Errorf("expected to evaluate %v, got %v", tc.expectEvaluate, evaluator.lv)
 			}
-			if !reflect.DeepEqual(result.Warnings, tc.expectWarnings) {
-				t.Errorf("expected warnings:\n%v\ngot\n%v", tc.expectWarnings, result.Warnings)
-			}
+			assertSlice(t, result.Warnings, tc.expectWarnings)
 		})
 	}
+}
+
+func assertSlice(t *testing.T, actual, expected []string) bool {
+	a, e := make(map[string][]string), make(map[string][]string)
+	for _, warning := range actual {
+		checkName := strings.Split(warning, ":")[0]
+		podNames := strings.Split(strings.Split(warning, ":")[1], ",")
+		a[checkName] = append(a[checkName], podNames...)
+	}
+	for _, warning := range expected {
+		checkName := strings.Split(warning, ":")[0]
+		podNames := strings.Split(strings.Split(warning, ":")[1], ",")
+		e[checkName] = append(e[checkName], podNames...)
+	}
+	return assert.Equal(t, e, a, "unexpected warnings")
 }
